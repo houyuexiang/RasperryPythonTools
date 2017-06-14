@@ -21,6 +21,7 @@ inifile = "XPReagentSync.ini"
 #判断os类型，true为Linux，false为windows
 bOS = True;
 
+
 #-------------判断是否已经确认哪个com口连接analyer------------#
 HasSelected = False
 #-------------判断是否已经接收到TestMap消息-------------------#
