@@ -24,7 +24,19 @@
     <Content Include="XPReagentSync.ini" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="DBConnect.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ReagentDecode.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="ReagentEncode.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="SerialOnRasperry.py" />
+    <Compile Include="Setting.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <Import Project="$(PtvsTargetsFile)" Condition="Exists($(PtvsTargetsFile))" />
   <Import Project="$(MSBuildToolsPath)\Microsoft.Common.targets" Condition="!Exists($(PtvsTargetsFile))" />

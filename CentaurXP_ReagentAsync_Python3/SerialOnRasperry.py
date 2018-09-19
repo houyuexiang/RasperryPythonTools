@@ -6,11 +6,17 @@ import struct
 import threading
 import os
 import socket,json,configparser
+import gc
 from apscheduler.schedulers.blocking import BlockingScheduler
-global serial1,serial2,sched
-global ToAnalyerSerial,HasSelected,flag,logFilePath,bRCTestMap,bRCTestCode,today,countm,countt,bResponse,SendBuffer,SendBufferID,inifile,bOS
+from Setting import *;
+import DBConnect as db;
+from ReagentDecode import GetTestMap;
+from ReagentEncode import MakeReagentMap;
+global serial1,serial2,sched,SyncReagentFromDB;
+global ToAnalyerSerial,ToCanbusSerial,HasSelected,flag,logFilePath,bRCTestMap,bRCTestCode,today,countm,countt,bResponse,SendBuffer,SendBufferID,inifile,bOS
 global STX,ETX,recvserverip,recvserverport,instrumentna,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive
-
+global bInReagentAsync,bInSampleQueueCommand,ReagentAsyncArray,bSendReagent
+global SerialList1,SerialList2,DICTestmap
 #接收数据服务器IP
 inifile = "XPReagentSync.ini"
 
@@ -20,7 +26,6 @@ inifile = "XPReagentSync.ini"
 
 #判断os类型，true为Linux，false为windows
 bOS = True;
-
 
 #-------------判断是否已经确认哪个com口连接analyer------------#
 HasSelected = False
@@ -37,49 +42,35 @@ bResponse=True
 #--------------试剂信息发送至数据库使用的buffer-------------------#
 SendBuffer = []
 SendBufferID = []
+ReagentAsyncArray = []
+#--------------处于发送试剂信息过程中---------#
+bSendReagent = False
 
-def CreateInI():
-    global logFilePath, bResponse, recvserverip, recvserverport, instrumentna, SchedulerTime_SerialCommunite, SchedulerTime_SendReagentToDB, SchedulerTime_SyncReagent, SchedulerTime_KeepAlive, bOS,inifile
-    conf = configparser.ConfigParser()
-    conf.add_section('MAIN')
-    conf.add_section('DB')
-    conf.add_section('SchedulerT')
-    conf.set('MAIN','NeedResponse','False')
-    conf.set('MAIN', 'InstrumentName', 'CentaurXP_1')
-    conf.set('MAIN', 'OS','True')
-    conf.set('MAIN', 'asyncflag','0')
-    conf.set('DB', 'ServerIP', '127.0.0.1')
-    conf.set('DB', 'ServerPort', '11111')
-    conf.set('SchedulerT', 'SerialComm','0.1')
-    conf.set('SchedulerT', 'SendReagentToDB', '1')
-    conf.set('SchedulerT', 'SyncReagent', '300')
-    conf.set('SchedulerT', 'KeepAlive', '60')
-    conf.write(open(inifile,"w"))
-    return
 
 def LoadConfig():
     global logFilePath,bResponse,recvserverip,recvserverport,instrumentna,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive,bOS,os,inifile
-    if os.path.exists(inifile) == False:
-        CreateInI()
-    conf = configparser.ConfigParser()
-    conf.read_file(open(inifile))
-    recvserverip  = conf.get('DB','ServerIP')
-    recvserverport = conf.get('DB','ServerPort')
-    instrumentna = conf.get('MAIN','InstrumentName')
-    response = conf.get('MAIN','NeedResponse')
+    global bInReagentAsync,bInSampleQueueCommand
+    global SyncReagentFromDB
+    recvserverip  = GetSetting('DB','ServerIP')
+    recvserverport = GetSetting('DB','ServerPort')
+    instrumentna = GetSetting('MAIN','InstrumentName')
+    response = GetSetting('MAIN','NeedResponse')
     if response == 'True':
         bResponse = True
     else:
         bResponse = False
-    osv = conf.get('MAIN', 'OS')
+    osv = GetSetting('MAIN', 'OS')
     if osv == 'True':
         bOS = True
     else:
         bOS = False
-    SchedulerTime_SerialCommunite = float(conf.get('SchedulerT','SerialComm'))
-    SchedulerTime_SendReagentToDB = float(conf.get('SchedulerT', 'SendReagentToDB'))
-    SchedulerTime_SyncReagent = float(conf.get('SchedulerT', 'SyncReagent'))
-    SchedulerTime_KeepAlive = float(conf.get('SchedulerT', 'KeepAlive'))
+    SyncReagentFromDB =  GetSetting('SchedulerT','SyncReagentFromDB')
+    SchedulerTime_SerialCommunite = float(GetSetting('SchedulerT','SerialComm'))
+    SchedulerTime_SendReagentToDB = float(GetSetting('SchedulerT', 'SendReagentToDB'))
+    SchedulerTime_SyncReagent = float(GetSetting('SchedulerT', 'SyncReagent'))
+    SchedulerTime_KeepAlive = float(GetSetting('SchedulerT', 'KeepAlive'))
+    db.LoadConfig();
+
 
 
 
@@ -87,18 +78,19 @@ def InitSerialPort():
     global serial1,serial2,bOS
     if bOS:
         # -----------------用于rasperry----------------------#
-        serial1 = serial.Serial('/dev/ttyUSB0', 9600, 8, 'N', 1, timeout=0.5)
+        serial1 = serial.Serial('/dev/ttyUSB0', 9600, 8, 'N', 1,timeout=0.5)
         if bResponse == False:
-            serial2 = serial.Serial('/dev/ttyUSB1', 9600, 8, 'N', 1, timeout=0.5)
+            serial2 = serial.Serial('/dev/ttyUSB1', 9600, 8, 'N', 1,timeout=0.5)
+            
     else:
         # ------------------用于windows---------------------#
-        serial1 = serial.Serial('COM2', 9600, 8, 'N', 1, timeout=0.5)
+        serial1 = serial.Serial('COM2', 9600, 8, 'N', 1,timeout=0.5)
         if bResponse == False:
-            serial2 = serial.Serial('COM3', 9600, 8, 'N', 1, timeout=0.5)
+            serial2 = serial.Serial('COM3', 9600, 8, 'N', 1,timeout=0.5)
 
 #------------
 def printmessage(serialporttext , text):
-    e=serialporttext + '   ' + time.strftime("'%Y-%m-%d %X'", time.localtime()) + ":" + text.decode('unicode-escape')
+    e=serialporttext + '   ' + str(datetime.datetime.now()) + ":" + text.decode('unicode-escape')
     print(e)
     writelog(e)
     hex1 = str(binascii.b2a_hex(text))[2:]
@@ -113,7 +105,7 @@ def writelog(text):
     global today,logFilePath
     try:
         if today != datetime.date.today():
-            logFilePath = "//PythonTools//SerialPort//" + time.strftime("%Y%m%d", time.localtime()) + "//"
+            logFilePath = "//PythonTools//CentaurXPReagentAsync//" + time.strftime("%Y%m%d", time.localtime()) + "//"
             today = datetime.date.today()
             if os.path.exists(logFilePath) == False:
                 os.mkdir(logFilePath)
@@ -138,35 +130,77 @@ def SerialRecieveReplyThreadByAPScheduler():
         text = text + SerialWork(serial2,serial1)
     else:
         text = SerialWork(serial1, serial1)
+    
     Serial_Decode(text)
+
+
+def SerialRecieveReplyThreadByThread():
+    global serial1, serial2, bResponse
+    while True:
+        if  bResponse == False:
+            text = SerialWork(serial1,serial2)
+            text = text + SerialWork(serial2,serial1)
+        else:
+            text = SerialWork(serial1, serial1)
+        Serial_Decode(text)
+        time.sleep(0.001)
+
+
+def CheckRecieveAll(byte):
+    tmp = str(binascii.b2a_hex(byte)).upper()
+    if tmp.find('F0') >=0 and tmp.find('F8')<=0 :
+        return True
+    if tmp.find('06') >= 0 and tmp.find('F0') >=0 and tmp.find('F8')<0:
+        return True
+    if tmp.find('06') >= 0 and len(tmp) < 6:
+        return True
+    return False
+        
 
 #--------------串口通讯处理--------------
 def SerialWork(serialna_alias,serialna_other):
-    global HasSelected, ToAnalyerSerial, flag, bRCTestMap, bRCTestCode, countm, countt, bResponse, bReadFinish
+    global HasSelected, ToAnalyerSerial,ToCanbusSerial, flag, bRCTestMap, bRCTestCode, countm, countt, bResponse, bReadFinish,ReagentAsyncArray,bSendReagent
     try:
-        l=serialna_alias.read_all()
+        #l=serialna_alias.readall()
+        l=serialna_alias.read(serialna_alias.inWaiting())
 
     except Exception as e:
         print('Recieve Error:' + str(e) + '\n')
         writelog('Recieve Error:' + str(e))
-    if l.decode('unicode-escape')!='':
+        return
 
+    if l.decode('unicode-escape')!='':
+        while CheckRecieveAll(l):
+            l = l + serialna_alias.read(serialna_alias.inWaiting())
+            time.sleep(0.01)
+        
         if bResponse == False:
             #------同时连接canbus与仪器，com1口逻辑
+
             if HasSelected == False:
                 if ISAnalyer(l):
                     ToAnalyerSerial = serialna_alias
+                    ToCanbusSerial = serialna_other
                     HasSelected = True
-                    flag = 1
-                    serialna_other.write(l)
+
             if HasSelected == True:
-                if flag==1:
+                if serialna_alias==ToAnalyerSerial:
                     instrna = "Analyer"
                 else:
                     instrna = "CanBus"
             else:
                 instrna = serialna_alias.portstr
+
+            #判断是否需要转发
+            if HasSelected:
+                p = CheckSampleQueueCommandDuringReagentAsync(l)
+            else:
+                p = l
+            serialna_other.write(p)
             printmessage(instrna, l)
+            #如果修改传输内容，则记录
+            if p!=l:
+                printmessage('Raspberry edit',p)
         else:
             #------只连接仪器----
             ToAnalyerSerial = serialna_alias
@@ -176,19 +210,92 @@ def SerialWork(serialna_alias,serialna_other):
             if responsebyte != None:
                 serial1.write(responsebyte)
                 printmessage("Rasperry", responsebyte)
+        print('end' + str(datetime.datetime.now()))
+        return str(binascii.b2a_hex(l))
+    else:
+        
+        #闲时发送未发送的试剂信息
+        if len(ReagentAsyncArray) > 0 and HasSelected and bInSampleQueueCommand == False:
+            p = binascii.a2b_hex(ReagentAsyncArray.pop())
+            ToCanbusSerial.write(p)
+            printmessage("Rasperry Send To Canbus", p)
+            bSendReagent = True
+            time.sleep(0.05)
+        else:
+            bSendReagent = False
+        return ''
 
-    return str(binascii.b2a_hex(l))
+
+def CheckSampleQueueCommandDuringReagentAsync(text):
+    global ToAnalyerSerial,ToCanbusSerial,bInReagentAsync,bInSampleQueueCommand,bSendReagent
+    tmp = str(binascii.b2a_hex(text)).upper()
+    tmp = tmp[2:len(tmp) - 1]
+    print(tmp)
+    pos = tmp.find('06')
+    if pos >= 0:
+        message = tmp[pos:pos + 4]
+        # 试剂同步结束
+        #xp-->canbus
+        if message.find('AF') >=0:
+            bInReagentAsync = False
+            #确定是rasbperry进行应答，则将消息中的06af去掉
+            if bInSampleQueueCommand:
+                tmp = tmp.replace(message, '')
+        # samplequeuecommand结束
+        # xp-->canbus
+        if message.find('CF')>= 0:
+            bInSampleQueueCommand = False
+        # canbus -->raspberry
+        if message.find('B5') >= 0 and bSendReagent:
+            tmp = tmp.replace(message,'')
+
+    startpos = tmp.find('F0')
+    endpos = tmp.find('F8')
+    if startpos >= 0 and endpos >= 0:
+        message = tmp[startpos:endpos + 2]
+        #试剂同步消息
+        pos  = message.find('B5')
+        if pos >= 0 :
+            #收到试剂消息，如果已经收到samplequeuecommand之后，且这个命令并未完成，则直接保存试剂消息，并自动应答
+            bInReagentAsync = True
+            if bInSampleQueueCommand:
+                ReagentAsyncArray.append(message)
+                Replystr = binascii.a2b_hex('06B5F001AF014231F8')
+                ToAnalyerSerial.write(Replystr)
+                printmessage('Raspberry Send to Analyer:',Replystr)
+                tmp = tmp.replace(message,"")
+        #samplequeuecommand
+        pos = message.find('A0')
+        if pos >= 0 :
+            bInSampleQueueCommand = True
+        #raspberry --> canbus
+        pos = message.find('AF')
+        if pos >=0 and bSendReagent:
+            Replystr = binascii.a2b_hex('06AF')
+            ToCanbusSerial.write(Replystr)
+            printmessage('Raspberry Send to Canbus:', Replystr)
+            tmp = tmp.replace(message, "")
+
+
+
+
+
+
+
+    return binascii.a2b_hex(tmp)
 
 
 #------试剂信息检查并解码
 def Serial_Decode(msg):
     global HasSelected, ToAnalyerSerial, serial1, serial2, flag, bRCTestMap, bRCTestCode, countm, countt, bResponse, bReadFinish
+    global SchedulerTime_SendReagentToDB,DICTestmap
     s = msg.upper()
     try:
         # --------确认是否收到testmap
         s.index("BF")
         bRCTestMap = True
         countm = 0
+        DICTestmap = GetTestMap(s);
     except:
         bRCTestMap = False
         countm = countm + 1
@@ -197,7 +304,8 @@ def Serial_Decode(msg):
         s.index("B5")
         bRCTestCode = True
         # -----多条试剂同步信息分开后逐条解码
-        SepReagentInfo(s)
+        if SchedulerTime_SendReagentToDB > 0:
+            SepReagentInfo(s)
         countt = 0
     except:
         bRCTestCode = False
@@ -257,12 +365,27 @@ def DecodeReagentInfo(ReagentFrame):
 
 
     #---------组装所有试剂信息----------------
+    if ReagentLot == "":
+        ReagentLot = "NA1"
     ReagentCountDIC = {ReagentLot:ReagentCount}
-    ReagentInfo = {'id':ReagentID + ReagentName,'name':ReagentName,'ReagentType':ReagentArea,'QuantityType':1,'Severity':int(ReagentSeverity),'TestCount':int(ReagentCount),'Enabled': 1, 'Reason': 0, 'LotCount': 1,'Reagent':ReagentCountDIC}
-    #ReagentSumDic = {ReagentID:ReagentInfo}
-    #单条试剂信息加入传输buffer
-    SendBufferID.append(ReagentID + ReagentName)
-    SendBuffer.append(ReagentInfo)
+    k = 0
+    while k < len(SendBuffer):
+        Reagenttmp = SendBuffer[k]
+        if Reagenttmp["id"] == ReagentID + ReagentName :
+            #不重复记录
+            if ReagentLot not in Reagenttmp["Reagent"]:
+                Reagenttmp["LotCount"] = Reagenttmp["LotCount"] + 1
+                Reagenttmp["TestCount"] = Reagenttmp["TestCount"] + int(ReagentCount)
+                Reagenttmp["Reagent"][ReagentLot] = ReagentCount
+                SendBuffer[k] = Reagenttmp
+            break
+        k = k + 1
+    if k == len(SendBuffer):
+        ReagentInfo = {'id':ReagentID + ReagentName,'name':ReagentName,'ReagentType':ReagentArea,'QuantityType':1,'Severity':int(ReagentSeverity),'TestCount':int(ReagentCount),'Enabled': 1, 'Reason': 0, 'LotCount': 1,'Reagent':ReagentCountDIC}
+        #ReagentSumDic = {ReagentID:ReagentInfo}
+        #单条试剂信息加入传输buffer
+        SendBufferID.append(ReagentID + ReagentName)
+        SendBuffer.append(ReagentInfo)
     #print(ReagentName + ":" + ReagentSeverity + ":" + ReagentArea + ":" + ReagentLot + ":" + ReagentCount)
 #---------建立tcp连接
 def tcpconnect(ip,port):
@@ -281,15 +404,30 @@ def SendReagentInfoToDbByAPScheduler():
     SendDic = {}
     try:
         if len(SendBuffer) > 0 :
-            sendres = tcpconnect(recvserverip, recvserverport)
+            sendres = tcpconnect(recvserverip, int(recvserverport))
             while len(SendBuffer) > 0 :
                 text = SendBuffer.pop(0)
                 id = SendBufferID.pop(0)
                 SendDic[id] = text
                 NeedSend = True
             if NeedSend == True:
-                sendres.send(str.encode(instrumentna + "|testmap|" + json.dumps(SendDic)))
-                printlog("Send to Server: " + str(SendDic))
+                tempsend = {}
+                tempsend["basic_info"] = {}
+                tempsend["basic_info"]["instrumentname"] = instrumentna
+                tempsend["basic_info"]["update_time"] = str(datetime.datetime.now())
+                tempsend["testmap"] = SendDic
+                sendcontent = str.encode(json.dumps(tempsend))
+                sendres.send(sendcontent)
+                print(str(tempsend))
+                r = "a"
+                while type(r) != float:
+                    r = bytes.decode(sendres.recv(102400))
+                    try:
+                        r = float(r)
+                        print (r)
+                    except:
+                        sendres.send(sendcontent)
+                        r = "false"
             sendres.close()
     except Exception as e:
         printlog("Send Msg FAIL:" + str(e))
@@ -346,7 +484,25 @@ def KeepAlive():
     KeepAliveBytes =  binascii.a2b_hex("F001803831F8")
     serial1.write(KeepAliveBytes)
 
-
+def SendReagentInfoFromDBToAptioByAPScheduler():
+    global DICTestmap,ToCanbusSerial,HasSelected;
+    print('SendReagentInfoFromDBToAptioByAPScheduler');
+    try:
+        if len(DICTestmap) > 0 and HasSelected :
+            testmap,reagentinfo = MakeReagentMap(instrumentna,DICTestmap);
+            if testmap != "":
+                writelog(ToCanSerial.portstr + ' IS To CAN')
+                s = binascii.a2b_hex(testmap)
+                ToCanSerial.write(s)
+                time.sleep(20)
+                for t in reagentinfo:
+                    s = binascii.a2b_hex(t)
+                    ToCanSerial.write(s)
+                    time.sleep(20)
+        else:
+            TimerSendReagentRequestByAPScheduler();
+    except:
+        print("Error");
 
 def TimerSendReagentRequestByAPScheduler():
     global HasSelected, ToAnalyerSerial, bRCTestMap, countm, countt
@@ -390,13 +546,19 @@ def MakeSche():
     while True:
         print('makesche' + str(SchedulerTime_SerialCommunite) + str(SchedulerTime_SyncReagent) + str(SchedulerTime_SendReagentToDB))
         sched = BlockingScheduler()
-        sched.add_job(SerialRecieveReplyThreadByAPScheduler, 'interval', seconds=SchedulerTime_SerialCommunite,
-                  id='SerialRecieveReplyThreadByAPScheduler')
+        #sched.add_job(SerialRecieveReplyThreadByAPScheduler, 'interval', seconds=SchedulerTime_SerialCommunite,
+        #          id='SerialRecieveReplyThreadByAPScheduler')
         sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
                   id='TimerSendReagentRequestByAPScheduler')
-        sched.add_job(SendReagentInfoToDbByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
+        if SchedulerTime_SendReagentToDB > 0:
+            sched.add_job(SendReagentInfoToDbByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
                   id='SendReagentInfoToDbByAPScheduler')
-
+        if SyncReagentFromDB == '1' :
+            sched.add_job(SendReagentInfoFromDBToAptioByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
+                  id='SendReagentInfoFromDBToAptioByAPScheduler')
+        else:
+            sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
+                  id='TimerSendReagentRequestByAPScheduler')
         if bResponse:
             sched.add_job(KeepAlive, 'interval', seconds=SchedulerTime_KeepAlive, id='KeepAlive')
 
@@ -420,11 +582,14 @@ def SyncSetting():
 
 
 
+#123
 if __name__ == '__main__':
-    global logFilePath,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive
-    logFilePath = "//PythonTools//SerialPort//" + time.strftime("%Y%m%d",time.localtime()) + "//"
+    global logFilePath,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive,bInReagentAsync,bInSampleQueueCommand
+    logFilePath = "//PythonTools//CentaurXPReagentAsync//" + time.strftime("%Y%m%d",time.localtime()) + "//"
     LoadConfig()
     InitSerialPort()
+    bInReagentAsync = False
+    bInSampleQueueCommand = False
     today = datetime.date.today()
 
 
@@ -434,6 +599,11 @@ if __name__ == '__main__':
     except:
         logFilePath = ""
     threads = []
+    
+    SerialTransmitT = threading.Thread(target=SerialRecieveReplyThreadByThread)
+    threads.append(SerialTransmitT)
+    
+
     SerialT = threading.Thread(target=MakeSche)
     threads.append(SerialT)
     SendT = threading.Thread(target=SyncSetting)
