@@ -1,7 +1,6 @@
 import binascii,binhex
 global dict;
 def GetTestMap(map):
-    global dic;
     dic = {};
     map = map.upper();
     startpos = map.find("BF");

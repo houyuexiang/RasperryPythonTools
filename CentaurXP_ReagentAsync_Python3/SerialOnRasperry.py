@@ -16,7 +16,7 @@ global serial1,serial2,sched,SyncReagentFromDB;
 global ToAnalyerSerial,ToCanbusSerial,HasSelected,flag,logFilePath,bRCTestMap,bRCTestCode,today,countm,countt,bResponse,SendBuffer,SendBufferID,inifile,bOS
 global STX,ETX,recvserverip,recvserverport,instrumentna,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive
 global bInReagentAsync,bInSampleQueueCommand,ReagentAsyncArray,bSendReagent
-global SerialList1,SerialList2,DICTestmap
+global SerialList1,SerialList2,DICTestmaps
 #接收数据服务器IP
 inifile = "XPReagentSync.ini"
 
@@ -287,15 +287,18 @@ def CheckSampleQueueCommandDuringReagentAsync(text):
 
 #------试剂信息检查并解码
 def Serial_Decode(msg):
-    global HasSelected, ToAnalyerSerial, serial1, serial2, flag, bRCTestMap, bRCTestCode, countm, countt, bResponse, bReadFinish
-    global SchedulerTime_SendReagentToDB,DICTestmap
+    global HasSelected, ToAnalyerSerial, serial1, serial2, flag, bRCTestMap, bRCTestCode, countm, countt, bResponse, bReadFinish,SchedulerTime_SendReagentToDB,DICTestmaps
+    
     s = msg.upper()
     try:
         # --------确认是否收到testmap
         s.index("BF")
         bRCTestMap = True
         countm = 0
-        DICTestmap = GetTestMap(s);
+        dic = GetTestMap(s);
+        if len(dic) > 0 :
+            DICTestmaps = dic;
+        
     except:
         bRCTestMap = False
         countm = countm + 1
@@ -307,8 +310,9 @@ def Serial_Decode(msg):
         if SchedulerTime_SendReagentToDB > 0:
             SepReagentInfo(s)
         countt = 0
+        print("Get B5")
     except:
-        bRCTestCode = False
+        #bRCTestCode = False
         countt = countt + 1
 
 
@@ -485,24 +489,45 @@ def KeepAlive():
     serial1.write(KeepAliveBytes)
 
 def SendReagentInfoFromDBToAptioByAPScheduler():
-    global DICTestmap,ToCanbusSerial,HasSelected;
+    global DICTestmaps,ToCanbusSerial,HasSelected,bRCTestCode;
     print('SendReagentInfoFromDBToAptioByAPScheduler');
     try:
-        if len(DICTestmap) > 0 and HasSelected :
-            testmap,reagentinfo = MakeReagentMap(instrumentna,DICTestmap);
+        print(DICTestmaps)
+        if len(DICTestmaps) > 0 and HasSelected :
+            testmap,reagentinfo = MakeReagentMap(instrumentna,DICTestmaps);
+            
             if testmap != "":
-                writelog(ToCanSerial.portstr + ' IS To CAN')
+                print(testmap)
+                print(reagentinfo)
+                writelog(ToCanbusSerial.portstr + ' IS To CAN')
                 s = binascii.a2b_hex(testmap)
-                ToCanSerial.write(s)
-                time.sleep(20)
+                ToCanbusSerial.write(s)
+                print('Rasperry To Canbus :' + 'Send ' + testmap + '\n')
+                writelog('Rasperry Send To Canbus : ' + testmap)
+                time.sleep(10)
                 for t in reagentinfo:
+                    bRCTestCode = False
                     s = binascii.a2b_hex(t)
-                    ToCanSerial.write(s)
-                    time.sleep(20)
+                    ToCanbusSerial.write(s)
+                    print('Rasperry To Canbus :' + 'Send ' + t + '\n')
+                    writelog('Rasperry Send To Canbus : ' + t)
+                    while bRCTestCode == False :
+                        time.sleep(2)
+                        print("wait for b5")
+                        print(bRCTestCode)
+                time.sleep(10)
+                s = binascii.a2b_hex('F001B34234F8')
+                try:
+                    ToAnalyerSerial.write(s)
+                    print('Rasperry To Analyer :' + 'Send F001B34234F8' + '\n')
+                    writelog('Rasperry Send To Analyer : F001B34234F8')
+                except:
+                    print('Rasperry To Analyer :' + 'Send Error' + '\n')
+                    writelog('Rasperry Send To Analyer : Error')
         else:
             TimerSendReagentRequestByAPScheduler();
-    except:
-        print("Error");
+    except Exception as e:
+        print(e);
 
 def TimerSendReagentRequestByAPScheduler():
     global HasSelected, ToAnalyerSerial, bRCTestMap, countm, countt
@@ -544,17 +569,17 @@ def TimerSendReagentRequestByAPScheduler():
 def MakeSche():
     global sched
     while True:
-        print('makesche' + str(SchedulerTime_SerialCommunite) + str(SchedulerTime_SyncReagent) + str(SchedulerTime_SendReagentToDB))
+        print('makesche' + str(SchedulerTime_SerialCommunite)  + ' ' + str(SchedulerTime_SyncReagent)+ ' ' + str(SchedulerTime_SendReagentToDB))
         sched = BlockingScheduler()
         #sched.add_job(SerialRecieveReplyThreadByAPScheduler, 'interval', seconds=SchedulerTime_SerialCommunite,
         #          id='SerialRecieveReplyThreadByAPScheduler')
-        sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
-                  id='TimerSendReagentRequestByAPScheduler')
+        #sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
+        #          id='TimerSendReagentRequestByAPScheduler')
         if SchedulerTime_SendReagentToDB > 0:
             sched.add_job(SendReagentInfoToDbByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
                   id='SendReagentInfoToDbByAPScheduler')
         if SyncReagentFromDB == '1' :
-            sched.add_job(SendReagentInfoFromDBToAptioByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
+            sched.add_job(SendReagentInfoFromDBToAptioByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
                   id='SendReagentInfoFromDBToAptioByAPScheduler')
         else:
             sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
@@ -585,13 +610,14 @@ def SyncSetting():
 #123
 if __name__ == '__main__':
     global logFilePath,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive,bInReagentAsync,bInSampleQueueCommand
+    global DICTestmaps
     logFilePath = "//PythonTools//CentaurXPReagentAsync//" + time.strftime("%Y%m%d",time.localtime()) + "//"
     LoadConfig()
     InitSerialPort()
     bInReagentAsync = False
     bInSampleQueueCommand = False
     today = datetime.date.today()
-
+    DICTestmaps = {}
 
     try:
         if os.path.exists(logFilePath) == False:
