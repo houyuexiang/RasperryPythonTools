@@ -12,6 +12,7 @@ from Setting import *;
 import DBConnect as db;
 from ReagentDecode import GetTestMap;
 from ReagentEncode import MakeReagentMap;
+import shutil;
 global serial1,serial2,sched,SyncReagentFromDB;
 global ToAnalyerSerial,ToCanbusSerial,HasSelected,flag,logFilePath,bRCTestMap,bRCTestCode,today,countm,countt,bResponse,SendBuffer,SendBufferID,inifile,bOS
 global STX,ETX,recvserverip,recvserverport,instrumentna,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive
@@ -105,7 +106,7 @@ def writelog(text):
     global today,logFilePath
     try:
         if today != datetime.date.today():
-            logFilePath = "//PythonTools//CentaurXPReagentAsync//" + time.strftime("%Y%m%d", time.localtime()) + "//"
+            logFilePath = "//PythonTools//CentaurXPReagentAsync//Log//" + time.strftime("%Y%m%d", time.localtime()) + "//"
             today = datetime.date.today()
             if os.path.exists(logFilePath) == False:
                 os.mkdir(logFilePath)
@@ -118,6 +119,20 @@ def writelog(text):
     except Exception as e:
         print(str(e))
         return
+
+def ClearLogBySchedulerEveryOneDay():
+    global today,logFilePath
+    rootpath = "//PythonTools//CentaurXPReagentAsync//Log//";
+    filename = os.listdir(rootpath);
+    for f in filename:
+        path =  rootpath + f;
+        if os.path.isdir(path):
+            curdate = time.strftime("%Y%m%d%H%M%S",time.localtime(time.time()))[0:8]  #取当前时间
+            filedate = str(datetime.datetime.fromtimestamp(os.path.getctime(filepath)))[0:11]  #取文件时间
+            dcur = datetime.datetime(int(curdate[:4]),int(curdate[4:6]),int(curdate[6:]))
+            dfile = datetime.datetime(int(filedate[:4]),int(filedate[5:7]),int(filedate[8:]))
+            if (dcur - dfile).days > 30:
+                shutil.rmtree(path)
 
 
 #----------串口通讯转发任务-----------
@@ -504,6 +519,8 @@ def SendReagentInfoFromDBToAptioByAPScheduler():
                 ToCanbusSerial.write(s)
                 print('Rasperry To Canbus :' + 'Send ' + testmap + '\n')
                 writelog('Rasperry Send To Canbus : ' + testmap)
+                print(binascii.a2b_hex(testmap).decode('unicode-escape'))
+                writelog(binascii.a2b_hex(testmap).decode('unicode-escape'))
                 time.sleep(10)
                 for t in reagentinfo:
                     bRCTestCode = False
@@ -511,10 +528,11 @@ def SendReagentInfoFromDBToAptioByAPScheduler():
                     ToCanbusSerial.write(s)
                     print('Rasperry To Canbus :' + 'Send ' + t + '\n')
                     writelog('Rasperry Send To Canbus : ' + t)
+                    print(binascii.a2b_hex(t).decode('unicode-escape'))
+                    writelog(binascii.a2b_hex(t).decode('unicode-escape'))
                     while bRCTestCode == False :
                         time.sleep(2)
                         print("wait for b5")
-                        print(bRCTestCode)
                 time.sleep(10)
                 s = binascii.a2b_hex('F001B34234F8')
                 try:
@@ -527,6 +545,7 @@ def SendReagentInfoFromDBToAptioByAPScheduler():
         else:
             TimerSendReagentRequestByAPScheduler();
     except Exception as e:
+        TimerSendReagentRequestByAPScheduler();
         print(e);
 
 def TimerSendReagentRequestByAPScheduler():
@@ -547,7 +566,7 @@ def TimerSendReagentRequestByAPScheduler():
                 writelog('Rasperry Send To Analyer : Error')
             countm = 0
         else:
-            print('Has not Recieved test map' + + '\n')
+            print('Has not Recieved test map' + '\n')
             writelog('Has not Recieved test map')
         time.sleep(20)
         writelog(ToAnalyerSerial.portstr + ' IS To Analyer')
@@ -575,6 +594,8 @@ def MakeSche():
         #          id='SerialRecieveReplyThreadByAPScheduler')
         #sched.add_job(TimerSendReagentRequestByAPScheduler, 'interval', seconds=SchedulerTime_SyncReagent,
         #          id='TimerSendReagentRequestByAPScheduler')
+        sched.add_job(ClearLogBySchedulerEveryOneDay, 'interval', days = 1,
+                  id='ClearLogBySchedulerEveryOneDay')
         if SchedulerTime_SendReagentToDB > 0:
             sched.add_job(SendReagentInfoToDbByAPScheduler, 'interval', seconds=SchedulerTime_SendReagentToDB,
                   id='SendReagentInfoToDbByAPScheduler')
@@ -611,8 +632,10 @@ def SyncSetting():
 if __name__ == '__main__':
     global logFilePath,SchedulerTime_SerialCommunite,SchedulerTime_SendReagentToDB,SchedulerTime_SyncReagent,SchedulerTime_KeepAlive,bInReagentAsync,bInSampleQueueCommand
     global DICTestmaps
-    logFilePath = "//PythonTools//CentaurXPReagentAsync//" + time.strftime("%Y%m%d",time.localtime()) + "//"
+    logFilePath = "//PythonTools//CentaurXPReagentAsync//Log//" + time.strftime("%Y%m%d",time.localtime()) + "//"
     LoadConfig()
+    # Keep Log File One Month
+    ClearLogBySchedulerEveryOneDay()
     InitSerialPort()
     bInReagentAsync = False
     bInSampleQueueCommand = False
